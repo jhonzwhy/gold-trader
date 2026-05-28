@@ -25,6 +25,13 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  // price.json 网络优先（确保实时金价）
+  if (event.request.url.includes('price.json')) {
+    event.respondWith(
+      fetch(event.request).catch(() => caches.match(event.request))
+    );
+    return;
+  }
   event.respondWith(
     caches.match(event.request).then(response =>
       response || fetch(event.request)
