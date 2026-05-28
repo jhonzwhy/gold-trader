@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <title>GoldTrader - 国际黄金模拟交易</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- 顶部账户栏 -->
+    <header class="account-bar">
+      <div class="account-info">
+        <span class="label">净值</span>
+        <span class="value" id="equity">100,000.00</span>
+      </div>
+      <div class="account-info">
+        <span class="label">余额</span>
+        <span class="value" id="balance">100,000.00</span>
+      </div>
+      <div class="account-info">
+        <span class="label">浮动盈亏</span>
+        <span class="value" id="floating-pnl">0.00</span>
+      </div>
+      <div class="account-info">
+        <span class="label">可用保证金</span>
+        <span class="value" id="free-margin">100,000.00</span>
+      </div>
+    </header>
+
+    <!-- 行情面板 -->
+    <section class="price-panel">
+      <div class="price-header">
+        <div class="price-pair">
+          <span class="pair-name">XAU/USD</span>
+          <span class="pair-desc">国际现货黄金 <small id="price-mode" style="padding:1px 5px;border-radius:3px;font-size:10px;border:1px solid var(--gold)">模拟</small> <small onclick="manualSetPrice()" style="padding:1px 5px;border-radius:3px;font-size:10px;border:1px solid var(--text-secondary);cursor:pointer;color:var(--text-secondary)">设置金价</small></span>
+        </div>
+        <div class="price-value">
+          <span class="current-price" id="current-price">2650.00</span>
+          <span class="price-change" id="price-change">+0.00 (0.00%)</span>
+        </div>
+      </div>
+      <div class="price-stats">
+        <div class="stat"><span class="stat-label">最高</span><span class="stat-value" id="high-price">2650.00</span></div>
+        <div class="stat"><span class="stat-label">最低</span><span class="stat-value" id="low-price">2650.00</span></div>
+        <div class="stat"><span class="stat-label">开盘</span><span class="stat-value" id="open-price">2650.00</span></div>
+        <div class="stat"><span class="stat-label">波动率</span>
+          <select id="volatility" class="vol-select">
+            <option value="0.0003">低</option>
+            <option value="0.0008" selected>中</option>
+            <option value="0.002">高</option>
+            <option value="0.005">极高</option>
+          </select>
+        </div>
+      </div>
+      <canvas id="price-chart"></canvas>
+    </section>
+
+    <!-- 交易面板 -->
+    <section class="trade-panel">
+      <div class="trade-inputs">
+        <div class="input-group">
+          <label>手数</label>
+          <div class="stepper">
+            <button onclick="adjustLots(-0.01)">-</button>
+            <input type="number" id="trade-lots" value="0.01" min="0.01" max="10" step="0.01">
+            <button onclick="adjustLots(0.01)">+</button>
+          </div>
+        </div>
+        <div class="input-group">
+          <label>杠杆</label>
+          <select id="leverage">
+            <option value="1">1x</option>
+            <option value="10">10x</option>
+            <option value="50" selected>50x</option>
+            <option value="100">100x</option>
+          </select>
+        </div>
+        <div class="input-group">
+          <label>止盈</label>
+          <input type="number" id="tp-price" placeholder="选填" step="0.01">
+        </div>
+        <div class="input-group">
+          <label>止损</label>
+          <input type="number" id="sl-price" placeholder="选填" step="0.01">
+        </div>
+      </div>
+      <div class="trade-buttons">
+        <button class="btn-buy" onclick="openTrade('buy')">买入做多</button>
+        <button class="btn-sell" onclick="openTrade('sell')">卖出做空</button>
+      </div>
+      <div class="margin-preview">
+        <span>保证金: <b id="margin-needed">0.00</b> USD</span>
+        <span>0.01手 1点=1美元</span>
+      </div>
+    </section>
+
+    <!-- 底部标签页 -->
+    <nav class="tab-bar">
+      <button class="tab active" onclick="switchTab('positions')">持仓</button>
+      <button class="tab" onclick="switchTab('history')">历史</button>
+      <button class="tab" onclick="switchTab('settings')">设置</button>
+    </nav>
+
+    <!-- 持仓列表 -->
+    <section class="tab-content active" id="tab-positions">
+      <div class="section-header">
+        <span>当前持仓</span>
+        <button class="btn-small btn-danger" onclick="closeAllPositions()" id="close-all-btn" style="display:none">全部平仓</button>
+      </div>
+      <div id="position-list" class="list-container">
+        <div class="empty-state">暂无持仓</div>
+      </div>
+    </section>
+
+    <!-- 历史记录 -->
+    <section class="tab-content" id="tab-history">
+      <div class="section-header">
+        <span>交易历史</span>
+        <div class="stats" id="trade-stats"></div>
+      </div>
+      <div id="history-list" class="list-container">
+        <div class="empty-state">暂无交易记录</div>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section class="tab-content" id="tab-settings">
+      <div class="settings-group">
+        <h3>账户管理</h3>
+        <div class="setting-item">
+          <span>初始资金</span>
+          <select id="initial-balance">
+            <option value="10000">10,000 USD</option>
+            <option value="50000">50,000 USD</option>
+            <option value="100000" selected>100,000 USD</option>
+            <option value="500000">500,000 USD</option>
+          </select>
+        </div>
+        <button class="btn-small btn-danger" onclick="resetAccount()">重置账户</button>
+      </div>
+      <div class="settings-group">
+        <h3>关于</h3>
+        <p class="about-text">GoldTrader 是一个国际黄金模拟交易应用，所有交易均为虚拟资金，不涉及真实资金。金价基于本地模拟算法生成，仅供学习参考。</p>
+        <p class="about-text">添加到主屏幕即可像APP一样使用。</p>
+      </div>
+    </section>
+
+    <!-- PWA安装提示 -->
+    <div class="install-prompt" id="install-prompt" style="display:none">
+      <span>点击安装到主屏幕，像APP一样使用</span>
+      <button onclick="installPWA()">安装</button>
+      <button onclick="dismissInstall()">关闭</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
