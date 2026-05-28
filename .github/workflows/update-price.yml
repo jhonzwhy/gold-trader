@@ -1,0 +1,56 @@
+name: Update Gold Price
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'  # 每5分钟运行
+  workflow_dispatch:  # 手动触发
+
+jobs:
+  update-price:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch gold price
+        run: |
+          # 尝试多个API获取金价
+          PRICE=""
+          
+          # API1: metals-api
+          PRICE=$(curl -s "https://api.metals.dev/v1/latest?api_key=demo&currency=USD&unit=toz" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['metals']['XAU'])" 2>/dev/null) || true
+          
+          if [ -z "$PRICE" ] || [ "$PRICE" = "None" ]; then
+            # API2: goldprice
+            PRICE=$(curl -s "https://data-asg.goldprice.org/dbXRates/USD" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['items'][0]['xauPrice'])" 2>/dev/null) || true
+          fi
+          
+          if [ -z "$PRICE" ] || [ "$PRICE" = "None" ]; then
+            # API3: frankfurter
+            PRICE=$(curl -s "https://api.frankfurter.app/latest?from=XAU&to=USD" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['rates']['USD'])" 2>/dev/null) || true
+          fi
+          
+          if [ -z "$PRICE" ] || [ "$PRICE" = "None" ]; then
+            echo "All APIs failed, skipping update"
+            exit 0
+          fi
+          
+          echo "Gold price: $PRICE"
+          
+          # 生成price.json
+          cat > price.json << EOF
+          {"price": $PRICE, "updated": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+          EOF
+          
+          # 检查是否有变化
+          if git diff --quiet price.json 2>/dev/null; then
+            echo "No price change, skipping commit"
+            exit 0
+          fi
+          
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add price.json
+          git commit -m "Update gold price: $PRICE"
+          git push
