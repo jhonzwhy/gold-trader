@@ -13,12 +13,12 @@ function defaultState() {
     balance: 100000,
     positions: [],
     history: [],
-    openPrice: 2650,
-    highPrice: 2650,
-    lowPrice: 2650,
-    currentPrice: 2650,
-    priceHistory: Array(60).fill(2650),
-    startPrice: 2650,
+    openPrice: 4390,
+    highPrice: 4390,
+    lowPrice: 4390,
+    currentPrice: 4390,
+    priceHistory: Array(60).fill(4390),
+    startPrice: 4390,
   };
 }
 
@@ -38,9 +38,12 @@ function saveState() {
 }
 
 // ============ 真实金价获取 ============
-// CORS代理列表（解决本地文件无法跨域请求的问题）
+// 方案1: 读取同源 price.json（由GitHub Action每5分钟更新，无CORS问题）
+// 方案2: CORS代理（备用）
+// 方案3: 手动输入
+
 const CORS_PROXIES = [
-  '', // 先尝试直连（部署到HTTPS网站时可用）
+  '',
   'https://api.allorigins.win/raw?url=',
   'https://corsproxy.io/?',
 ];
@@ -60,9 +63,22 @@ async function fetchWithProxy(url) {
 }
 
 async function fetchRealPrice() {
-  // 尝试多个免费API
+  // 优先级1: 读取同源 price.json（GitHub Action更新）
+  try {
+    const res = await fetch('./price.json', { cache: 'no-store' });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.price && data.price > 1000 && data.price < 10000) {
+        const age = (Date.now() - new Date(data.updated).getTime()) / 60000;
+        if (age < 30) { // 30分钟内有效
+          return { price: Math.round(data.price * 100) / 100, source: 'price.json', age: age };
+        }
+      }
+    }
+  } catch (e) {}
+  
+  // 优先级2: 通过CORS代理获取
   const apis = [
-    // API1: gold-price.org (JSONP友好)
     async () => {
       const res = await fetchWithProxy('https://data-asg.goldprice.org/dbXRates/USD');
       if (!res) throw new Error('fetch failed');
@@ -72,7 +88,6 @@ async function fetchRealPrice() {
       }
       throw new Error('Invalid response');
     },
-    // API2: metals.dev
     async () => {
       const res = await fetchWithProxy('https://api.metals.dev/v1/latest?api_key=demo&currency=USD&unit=toz');
       if (!res) throw new Error('fetch failed');
@@ -82,27 +97,15 @@ async function fetchRealPrice() {
       }
       throw new Error('Invalid response');
     },
-    // API3: frankfurter
-    async () => {
-      const res = await fetchWithProxy('https://api.frankfurter.app/latest?from=XAU&to=USD');
-      if (!res) throw new Error('fetch failed');
-      const data = await res.json();
-      if (data && data.rates && data.rates.USD) {
-        return data.rates.USD;
-      }
-      throw new Error('Invalid response');
-    },
   ];
   
   for (const api of apis) {
     try {
       const price = await api();
-      if (price && price > 1000 && price < 5000) {
-        return Math.round(price * 100) / 100;
+      if (price && price > 1000 && price < 10000) {
+        return { price: Math.round(price * 100) / 100, source: 'api', age: 0 };
       }
-    } catch (e) {
-      continue;
-    }
+    } catch (e) { continue; }
   }
   return null;
 }
@@ -110,23 +113,20 @@ async function fetchRealPrice() {
 // 定时获取真实金价（每30秒）
 async function refreshRealPrice() {
   try {
-    const price = await fetchRealPrice();
-    if (price) {
+    const result = await fetchRealPrice();
+    if (result && result.price) {
+      const price = result.price;
       lastRealPrice = price;
       priceMode = 'real';
-      // 用真实价格更新当前价（加入微小随机波动模拟tick级变化）
       if (Math.abs(price - state.currentPrice) > 50) {
-        // 价格偏差太大（可能是隔夜），直接更新
         state.currentPrice = price;
         state.startPrice = price;
         state.highPrice = Math.max(state.highPrice, price);
         state.lowPrice = Math.min(state.lowPrice, price);
       } else {
-        // 在真实价格附近微调，模拟tick级波动
-        const noise = (Math.random() - 0.5) * 0.1;
+        const noise = (Math.random() - 0.5) * 0.3;
         state.currentPrice = Math.round((price + noise) * 100) / 100;
       }
-      // 更新模式标识
       updatePriceModeBadge();
     }
   } catch (e) {
@@ -147,8 +147,8 @@ function manualSetPrice() {
   const input = prompt('请输入当前金价（如 3315.50）：', lastRealPrice ? lastRealPrice.toFixed(2) : '');
   if (input === null) return;
   const price = parseFloat(input);
-  if (!price || price < 1000 || price > 5000) {
-    showToast('金价范围: 1000-5000', 'error');
+  if (!price || price < 1000 || price > 10000) {
+    showToast('金价范围: 1000-10000', 'error');
     return;
   }
   lastRealPrice = price;
@@ -173,7 +173,7 @@ function simulatePrice() {
   // 如果有真实价格，基于真实价格微调
   if (priceMode === 'real' && lastRealPrice) {
     // 在真实价格附近添加微小波动（模拟tick级变化）
-    const noise = (Math.random() - 0.5) * 0.06;
+    const noise = (Math.random() - 0.5) * 0.3;
     state.currentPrice = Math.round((lastRealPrice + noise) * 100) / 100;
   } else {
     const sigma = parseFloat(document.getElementById('volatility').value);
@@ -541,12 +541,12 @@ function resetAccount() {
   const initial = parseInt(document.getElementById('initial-balance').value);
   state = defaultState();
   state.balance = initial;
-  state.currentPrice = 2650;
-  state.openPrice = 2650;
-  state.startPrice = 2650;
-  state.highPrice = 2650;
-  state.lowPrice = 2650;
-  state.priceHistory = Array(60).fill(2650);
+  state.currentPrice = 4390;
+  state.openPrice = 4390;
+  state.startPrice = 4390;
+  state.highPrice = 4390;
+  state.lowPrice = 4390;
+  state.priceHistory = Array(60).fill(4390);
   saveState();
   renderPositions();
   renderHistory();
