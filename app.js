@@ -37,101 +37,129 @@ function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-// ============ 真实金价获取 ============
-// 方案1: 读取同源 price.json（由GitHub Action每5分钟更新，无CORS问题）
-// 方案2: CORS代理（备用）
-// 方案3: 手动输入
+// ============ 实时金价（Finnhub WebSocket）=============
+// WebSocket不受CORS限制，可在浏览器中直接连接获取实时金价
+// 免费注册: https://finnhub.io
 
-const CORS_PROXIES = [
-  '',
-  'https://api.allorigins.win/raw?url=',
-  'https://corsproxy.io/?',
-];
+let ws = null;
+let wsReconnectTimer = null;
+let finnhubApiKey = localStorage.getItem('finnhub_api_key') || '';
 
-async function fetchWithProxy(url) {
-  for (const proxy of CORS_PROXIES) {
-    try {
-      const fullUrl = proxy ? proxy + encodeURIComponent(url) : url;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
-      const res = await fetch(fullUrl, { signal: controller.signal });
-      clearTimeout(timeout);
-      if (res.ok) return res;
-    } catch (e) { continue; }
+function connectFinnhubWS() {
+  if (!finnhubApiKey) {
+    // 没有API Key，尝试price.json回退
+    fallbackToPriceJson();
+    return;
   }
-  return null;
+  
+  if (ws && ws.readyState === WebSocket.OPEN) return; // 已连接
+  
+  try {
+    ws = new WebSocket(`wss://ws.finnhub.io?token=${finnhubApiKey}`);
+    
+    ws.onopen = () => {
+      console.log('Finnhub WebSocket 已连接');
+      // 订阅黄金XAU/USD
+      ws.send(JSON.stringify({ type: 'subscribe', symbol: 'OANDA:XAU_USD' }));
+    };
+    
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'trade' && data.data && data.data.length > 0) {
+        // 取最新的成交价
+        const lastTrade = data.data[data.data.length - 1];
+        const price = lastTrade.p;
+        if (price && price > 1000 && price < 10000) {
+          lastRealPrice = price;
+          priceMode = 'real';
+          state.currentPrice = Math.round(price * 100) / 100;
+          state.highPrice = Math.max(state.highPrice, state.currentPrice);
+          state.lowPrice = Math.min(state.lowPrice, state.currentPrice);
+          updatePriceModeBadge();
+        }
+      } else if (data.type === 'ping') {
+        // 心跳，忽略
+      }
+    };
+    
+    ws.onerror = (e) => {
+      console.error('Finnhub WebSocket 错误');
+    };
+    
+    ws.onclose = () => {
+      console.log('Finnhub WebSocket 断开，5秒后重连');
+      ws = null;
+      wsReconnectTimer = setTimeout(connectFinnhubWS, 5000);
+    };
+  } catch (e) {
+    console.error('WebSocket连接失败:', e);
+    fallbackToPriceJson();
+  }
 }
 
-async function fetchRealPrice() {
-  // 优先级1: 读取同源 price.json（GitHub Action更新）
+function disconnectFinnhubWS() {
+  if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+  if (ws) {
+    ws.onclose = null; // 防止自动重连
+    ws.close();
+    ws = null;
+  }
+}
+
+// 回退方案: 读取price.json
+async function fallbackToPriceJson() {
   try {
     const res = await fetch('./price.json', { cache: 'no-store' });
     if (res.ok) {
       const data = await res.json();
       if (data && data.price && data.price > 1000 && data.price < 10000) {
         const age = (Date.now() - new Date(data.updated).getTime()) / 60000;
-        if (age < 30) { // 30分钟内有效
-          return { price: Math.round(data.price * 100) / 100, source: 'price.json', age: age };
+        if (age < 60) {
+          lastRealPrice = data.price;
+          priceMode = 'real';
+          state.currentPrice = Math.round(data.price * 100) / 100;
+          updatePriceModeBadge();
         }
       }
     }
   } catch (e) {}
-  
-  // 优先级2: 通过CORS代理获取
-  const apis = [
-    async () => {
-      const res = await fetchWithProxy('https://data-asg.goldprice.org/dbXRates/USD');
-      if (!res) throw new Error('fetch failed');
-      const data = await res.json();
-      if (data && data.items && data.items[0] && data.items[0].xauPrice) {
-        return data.items[0].xauPrice;
-      }
-      throw new Error('Invalid response');
-    },
-    async () => {
-      const res = await fetchWithProxy('https://api.metals.dev/v1/latest?api_key=demo&currency=USD&unit=toz');
-      if (!res) throw new Error('fetch failed');
-      const data = await res.json();
-      if (data && data.metals && data.metals.XAU) {
-        return data.metals.XAU;
-      }
-      throw new Error('Invalid response');
-    },
-  ];
-  
-  for (const api of apis) {
-    try {
-      const price = await api();
-      if (price && price > 1000 && price < 10000) {
-        return { price: Math.round(price * 100) / 100, source: 'api', age: 0 };
-      }
-    } catch (e) { continue; }
+}
+
+// 设置Finnhub API Key
+function setFinnhubKey() {
+  const input = prompt('请输入Finnhub API Key（免费获取: finnhub.io/register）：', finnhubApiKey);
+  if (input === null) return;
+  const key = input.trim();
+  if (!key) {
+    finnhubApiKey = '';
+    localStorage.removeItem('finnhub_api_key');
+    disconnectFinnhubWS();
+    priceMode = 'sim';
+    updatePriceModeBadge();
+    showToast('已断开实时金价', 'info');
+    return;
   }
+  finnhubApiKey = key;
+  localStorage.setItem('finnhub_api_key', key);
+  disconnectFinnhubWS();
+  connectFinnhubWS();
+  showToast('正在连接实时金价...', 'success');
+}
+
+async function fetchRealPrice() {
+  // WebSocket模式下不需要轮询
+  if (ws && ws.readyState === WebSocket.OPEN) return null;
+  // 回退到price.json
+  await fallbackToPriceJson();
   return null;
 }
 
-// 定时获取真实金价（每30秒）
+// 定时获取金价（仅作为WebSocket的回退）
 async function refreshRealPrice() {
+  if (ws && ws.readyState === WebSocket.OPEN) return; // WebSocket已连接，无需轮询
   try {
-    const result = await fetchRealPrice();
-    if (result && result.price) {
-      const price = result.price;
-      lastRealPrice = price;
-      priceMode = 'real';
-      if (Math.abs(price - state.currentPrice) > 50) {
-        state.currentPrice = price;
-        state.startPrice = price;
-        state.highPrice = Math.max(state.highPrice, price);
-        state.lowPrice = Math.min(state.lowPrice, price);
-      } else {
-        const noise = (Math.random() - 0.5) * 0.3;
-        state.currentPrice = Math.round((price + noise) * 100) / 100;
-      }
-      updatePriceModeBadge();
-    }
-  } catch (e) {
-    // 获取失败，保持当前模式
-  }
+    await fallbackToPriceJson();
+  } catch (e) {}
 }
 
 function updatePriceModeBadge() {
@@ -170,9 +198,20 @@ function manualSetPrice() {
 let priceTick = 0;
 
 function simulatePrice() {
-  // 如果有真实价格，基于真实价格微调
+  // WebSocket实时模式下，价格由onmessage直接更新，不需要模拟
+  if (priceMode === 'real' && ws && ws.readyState === WebSocket.OPEN) {
+    // 价格已由WebSocket实时更新，只记录历史
+    priceTick++;
+    if (priceTick % 2 === 0) {
+      state.priceHistory.push(state.currentPrice);
+      if (state.priceHistory.length > 120) state.priceHistory.shift();
+    }
+    checkTPSL();
+    return;
+  }
+  
+  // 有真实价格但WebSocket断开时，基于真实价格微调
   if (priceMode === 'real' && lastRealPrice) {
-    // 在真实价格附近添加微小波动（模拟tick级变化）
     const noise = (Math.random() - 0.5) * 0.3;
     state.currentPrice = Math.round((lastRealPrice + noise) * 100) / 100;
   } else {
@@ -602,9 +641,9 @@ updateAccountBar();
 updateMarginPreview();
 
 // 尝试获取真实金价
-refreshRealPrice();
-setInterval(refreshRealPrice, 30000); // 每30秒刷新
+connectFinnhubWS();
+setInterval(refreshRealPrice, 30000);
 
-// 每秒更新价格
+// 每秒更新UI
 setInterval(gameLoop, 1000);
 gameLoop();
